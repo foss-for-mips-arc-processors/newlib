@@ -18,6 +18,7 @@
 #include "xlenint.h"
 #include <string.h>
 #include <sys/asm.h>
+#include "mips-riscv-i8500.h"
 
 #define unlikely(X) __builtin_expect (!!(X), 0)
 
@@ -54,6 +55,13 @@ __libc_load_xlen (const void *src)
 }
 #endif
 
+#define BODY(a, b, t) \
+{ \
+  t tt = *b; \
+  a++, b++; \
+  *(a - 1) = tt; \
+}
+
 void *
 __inhibit_loop_to_libcall
 memcpy (void *__restrict aa, const void *__restrict bb, size_t n)
@@ -75,6 +83,7 @@ memcpy (void *__restrict aa, const void *__restrict bb, size_t n)
  * This uses only one aligned store for every four (or eight for XLEN == 64)
  * bytes of data.
  */
+#ifndef __riscv_mips_i8500
 #ifndef __riscv_misaligned_fast
   if (unlikely ((((uintptr_t)a & msk) != ((uintptr_t)b & msk))))
     {
@@ -100,6 +109,7 @@ memcpy (void *__restrict aa, const void *__restrict bb, size_t n)
       return aa;
     }
 #endif
+#endif
 
   if (unlikely (((uintptr_t)a & msk) != 0))
     {
@@ -113,8 +123,65 @@ memcpy (void *__restrict aa, const void *__restrict bb, size_t n)
   const uintxlen_t *lb = (const uintxlen_t *)b;
   uintxlen_t *lend = (uintxlen_t *)((uintptr_t)end & ~msk);
 
+  #if defined (__riscv_zicbop) && defined (__riscv_zicboz)
+  while (la < lend && ((uintptr_t)la & ALIGN_AT_64_BYTES_MASK))
+    {
+      BODY (la, lb, long);
+    }
+  #elif defined (__riscv_zicbop)
+    while (la < lend && ((uintptr_t)la & ALIGN_AT_16_BYTES_MASK))
+      {
+        BODY (la, lb, long);
+      }
+  #endif
+
   if (unlikely (lend - la > 8))
     {
+#if defined (__riscv_mips_i8500)
+  long lb_align = (uintptr_t)lb & ALIGN_AT_64_BYTES_MASK;
+  if ((lb_align >= 0x01 && lb_align <= 0x07 ||
+        (lb_align >= 0x09 && lb_align <= 0x0f)))
+  {
+    #if defined (__riscv_zicbop)
+      UNALIGNED_COPY_LOOP_WITH_PREF (la, lb, lend, 0, 16, 32, 48);
+    #else
+      UNALIGNED_COPY_LOOP (la, lb, lend, 0, 8, 16, 24, 32, 40, 48);
+    #endif
+  } else if ((lb_align >= 0x11 && lb_align <= 0x17) ||
+              (lb_align >= 0x19 && lb_align <= 0x1f))
+  {
+    #if defined (__riscv_zicbop)
+      UNALIGNED_COPY_LOOP_WITH_PREF (la, lb, lend, 0, 16, 48, 32);
+    #else
+      UNALIGNED_COPY_LOOP (la, lb, lend, 0, 8, 16, 24, 48, 56, 32);
+    #endif
+  } else if ((lb_align >= 0x21 && lb_align <= 0x27) ||
+              (lb_align >= 0x29 && lb_align <= 0x2f))
+  {
+    #if defined (__riscv_zicbop)
+      UNALIGNED_COPY_LOOP_WITH_PREF (la, lb, lend, 0, 32, 48, 16);
+    #else
+      UNALIGNED_COPY_LOOP (la, lb, lend, 0, 8, 32, 40, 48, 56, 16);
+    #endif
+  } else if ((lb_align >= 0x31 && lb_align <= 0x37) ||
+              (lb_align >= 0x39 && lb_align <= 0x3f))
+  {
+    #if defined (__riscv_zicbop)
+      UNALIGNED_COPY_LOOP_WITH_PREF (la, lb, lend, 16, 32, 48, 0);
+    #else
+      UNALIGNED_COPY_LOOP (la, lb, lend, 16, 24, 32, 40, 48, 56, 0);
+    #endif
+  } else
+  {
+    #if defined (__riscv_zicbop) && defined (__riscv_zicboz)
+      ALIGNED_COPY_LOOP_WITH_PREF_AND_CBO (la, lb, lend);
+    #elif defined (__riscv_zicbop)
+      ALIGNED_COPY_LOOP_WITH_PREF (la, lb, lend);
+    #else
+      ALIGNED_COPY_LOOP (la, lb, lend);
+    #endif
+  }
+#else
       while (lend - la > 8)
         {
           uintxlen_t b0 = *lb++;
@@ -136,6 +203,7 @@ memcpy (void *__restrict aa, const void *__restrict bb, size_t n)
           *la++ = b7;
           *la++ = b8;
         }
+#endif
     }
 
   a = (unsigned char *)la;
